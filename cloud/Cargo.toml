@@ -1,0 +1,5 @@
+[workspace]
+members = ["server", "common-types", "client", "drivers"]
+
+[profile.release]
+incremental = true

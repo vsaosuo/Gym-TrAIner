@@ -1,0 +1,143 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include "../address_map_arm.h"
+
+#define WIDTH 320
+#define HEIGHT 240
+#define FPS 30
+
+/* Prototypes for functions used to access physical memory addresses */
+int open_physical (int);
+void * map_physical (int, unsigned int, unsigned int);
+void close_physical (int);
+int unmap_physical (void *, unsigned int);
+
+int main(void)
+{
+   volatile int * KEY_ptr, *VIDEO_ptr, *BUFF_ptr, *VIDEO_ptr_en;   // virtual address pointer to red LEDs
+
+   //Pointer to file
+   FILE *fp;
+
+   //frame and time counters
+   int frame_count = 0;
+   clock_t start_time, end_time;
+   double elapsed_time;
+
+   int fd = -1;               // used to open /dev/mem for access to physical addresses
+   void *LW_virtual;          // used to map physical addresses for the light-weight bridge
+   void *FPGA_ONCHIP_virtual; // used to map physical addresses for the ONCHIP memory
+
+   // Create virtual memory access to the FPGA light-weight bridge
+   if ((fd = open_physical (fd)) == -1)
+      return (-1);
+   if ((LW_virtual = map_physical (fd, LW_BRIDGE_BASE, LW_BRIDGE_SPAN)) == NULL)
+      return (-1);
+   if ((FPGA_ONCHIP_virtual = map_physical (fd, FPGA_ONCHIP_BASE, FPGA_ONCHIP_SPAN)) == NULL)
+      return (-1);
+
+   fp = fopen("test2.bin", "w");
+   if (fp == NULL){
+      fprintf(stderr, "Error: unable to open output file\n");
+      return (-1);
+   }
+
+   // Set virtual address pointer to I/O port
+   VIDEO_ptr = (unsigned int *) (LW_virtual + VIDEO_IN_BASE);
+   KEY_ptr   = (unsigned int *) (LW_virtual + KEY_BASE);
+   BUFF_ptr  = (unsigned int *) (FPGA_ONCHIP_virtual);
+
+   VIDEO_ptr_en = (unsigned int *) ( (void*) VIDEO_ptr + 0xC);
+
+   //Enable Camera
+   *(VIDEO_ptr_en) = (*(VIDEO_ptr_en) | 1 << 2);
+
+    //Start reading
+    start_time = clock();
+    int y,x;
+
+
+    while ( frame_count < FPS*5){
+	   printf("Frame: %d \n", frame_count);
+       for(y = 0; y < HEIGHT  ; y++){
+           //uint16_t pixel =  (unsigned int *) (*(BUFF_ptr + y * WIDTH + x));
+
+           fwrite( (void *) BUFF_ptr + (y << 10), (size_t) 2 , WIDTH, fp);
+       }
+       //printf("pixel_ptr = %p\n fp = %p\n",pixel, fp);
+       //fwrite(BUFF_ptr, 1, WIDTH * HEIGHT, fp);
+       //fprintf(fp, "\n\n");
+       frame_count++;
+       end_time = clock();
+       elapsed_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
+       if ( elapsed_time < 1.0 / FPS){
+          int delay_ms = (int)(((1.0 / FPS) - elapsed_time) * 1000);
+          usleep(delay_ms * 1000);
+       }
+       start_time = clock();
+    }
+    fclose(fp);
+
+   //Disable Camera
+   *(VIDEO_ptr_en) = (*(VIDEO_ptr_en) | 0 << 2);
+   unmap_physical (LW_virtual, LW_BRIDGE_SPAN);   // release the physical-memory mapping
+   close_physical (fd);   // close /dev/mem
+   return 0;
+}
+
+// Open /dev/mem, if not already done, to give access to physical addresses
+int open_physical (int fd)
+{
+   if (fd == -1)
+      if ((fd = open( "/dev/mem", (O_RDWR | O_SYNC))) == -1)
+      {
+         printf ("ERROR: could not open \"/dev/mem\"...\n");
+         return (-1);
+      }
+   return fd;
+}
+
+// Close /dev/mem to give access to physical addresses
+void close_physical (int fd)
+{
+   close (fd);
+}
+
+/*
+ * Establish a virtual address mapping for the physical addresses starting at base, and
+ * extending by span bytes.
+ */
+void* map_physical(int fd, unsigned int base, unsigned int span)
+{
+   void *virtual_base;
+
+   // Get a mapping from physical addresses to virtual addresses
+   virtual_base = mmap (NULL, span, (PROT_READ | PROT_WRITE), MAP_SHARED, fd, base);
+   if (virtual_base == MAP_FAILED)
+   {
+      printf ("ERROR: mmap() failed...\n");
+      close (fd);
+      return (NULL);
+   }
+   return virtual_base;
+}
+
+/*
+ * Close the previously-opened virtual address mapping
+ */
+int unmap_physical(void * virtual_base, unsigned int span)
+{
+   if (munmap (virtual_base, span) != 0)
+   {
+      printf ("ERROR: munmap() failed...\n");
+      return (-1);
+   }
+   return 0;
+}
+
+
